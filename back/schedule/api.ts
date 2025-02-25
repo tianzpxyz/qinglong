@@ -4,6 +4,7 @@ import EnvService from '../services/env';
 import { sendUnaryData, ServerUnaryCall } from '@grpc/grpc-js';
 import {
   CreateEnvRequest,
+  CronItem,
   DeleteEnvsRequest,
   DisableEnvsRequest,
   EnableEnvsRequest,
@@ -21,6 +22,15 @@ import {
 import LoggerInstance from '../loaders/logger';
 import pick from 'lodash/pick';
 import SystemService from '../services/system';
+import CronService from '../services/cron';
+import {
+  CronDetailRequest,
+  CronDetailResponse,
+  CreateCronRequest,
+  UpdateCronRequest,
+  DeleteCronsRequest,
+  CronResponse,
+} from '../protos/api';
 
 Container.set('logger', LoggerInstance);
 
@@ -29,6 +39,13 @@ export const getEnvs = async (
   callback: sendUnaryData<EnvsResponse>,
 ) => {
   try {
+    if (!call.request.searchValue) {
+      return callback(null, {
+        code: 400,
+        data: [],
+        message: 'searchValue is required',
+      });
+    }
     const envService = Container.get(EnvService);
     const data = await envService.envs(call.request.searchValue);
     callback(null, {
@@ -167,6 +184,91 @@ export const systemNotify = async (
     const systemService = Container.get(SystemService);
     const data = await systemService.notify(call.request);
     callback(null, data);
+  } catch (e: any) {
+    callback(e);
+  }
+};
+
+const normalizeCronData = (data: CronItem | null): CronItem | undefined => {
+  if (!data) return undefined;
+  return {
+    ...data,
+    sub_id: data.sub_id ?? undefined,
+    extra_schedules: data.extra_schedules ?? undefined,
+    pid: data.pid ?? undefined,
+    task_before: data.task_before ?? undefined,
+    task_after: data.task_after ?? undefined,
+  };
+};
+
+export const getCronDetail = async (
+  call: ServerUnaryCall<CronDetailRequest, CronDetailResponse>,
+  callback: sendUnaryData<CronDetailResponse>,
+) => {
+  try {
+    if (!call.request.log_path) {
+      return callback(null, {
+        code: 400,
+        data: undefined,
+        message: 'log_path is required',
+      });
+    }
+    const cronService = Container.get(CronService);
+    const data = (await cronService.find({
+      log_path: call.request.log_path,
+    })) as CronItem;
+    callback(null, { code: 200, data: normalizeCronData(data) });
+  } catch (e: any) {
+    callback(e);
+  }
+};
+
+export const createCron = async (
+  call: ServerUnaryCall<CreateCronRequest, CronResponse>,
+  callback: sendUnaryData<CronResponse>,
+) => {
+  try {
+    const cronService = Container.get(CronService);
+    const data = (await cronService.create(call.request)) as CronItem;
+    callback(null, { code: 200, data: normalizeCronData(data) });
+  } catch (e: any) {
+    callback(e);
+  }
+};
+
+export const updateCron = async (
+  call: ServerUnaryCall<UpdateCronRequest, CronResponse>,
+  callback: sendUnaryData<CronResponse>,
+) => {
+  try {
+    const cronService = Container.get(CronService);
+    const { id, ...fields } = call.request;
+
+    const updateRequest = {
+      id,
+      ...Object.entries(fields).reduce((acc: any, [key, value]) => {
+        if (value !== undefined) {
+          acc[key] = value;
+        }
+        return acc;
+      }, {}),
+    } as UpdateCronRequest;
+
+    const data = (await cronService.update(updateRequest)) as CronItem;
+    callback(null, { code: 200, data: normalizeCronData(data) });
+  } catch (e: any) {
+    callback(e);
+  }
+};
+
+export const deleteCrons = async (
+  call: ServerUnaryCall<DeleteCronsRequest, Response>,
+  callback: sendUnaryData<Response>,
+) => {
+  try {
+    const cronService = Container.get(CronService);
+    await cronService.remove(call.request.ids);
+    callback(null, { code: 200 });
   } catch (e: any) {
     callback(e);
   }

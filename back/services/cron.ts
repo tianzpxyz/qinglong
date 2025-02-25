@@ -22,6 +22,7 @@ import dayjs from 'dayjs';
 import pickBy from 'lodash/pickBy';
 import omit from 'lodash/omit';
 import { writeFileWithLock } from '../shared/utils';
+import { ScheduleType } from '../interface/schedule';
 
 @Service()
 export default class CronService {
@@ -35,22 +36,36 @@ export default class CronService {
     return false;
   }
 
+  private isOnceSchedule(schedule?: string) {
+    return schedule?.startsWith(ScheduleType.ONCE);
+  }
+
+  private isBootSchedule(schedule?: string) {
+    return schedule?.startsWith(ScheduleType.BOOT);
+  }
+
+  private isSpecialSchedule(schedule?: string) {
+    return this.isOnceSchedule(schedule) || this.isBootSchedule(schedule);
+  }
+
   public async create(payload: Crontab): Promise<Crontab> {
     const tab = new Crontab(payload);
     tab.saved = false;
     const doc = await this.insert(tab);
-    if (this.isNodeCron(doc)) {
+
+    if (this.isNodeCron(doc) && !this.isSpecialSchedule(doc.schedule)) {
       await cronClient.addCron([
         {
           name: doc.name || '',
           id: String(doc.id),
           schedule: doc.schedule!,
           command: this.makeCommand(doc),
-          extraSchedules: doc.extra_schedules || [],
+          extra_schedules: doc.extra_schedules || [],
         },
       ]);
     }
-    await this.set_crontab();
+
+    await this.setCrontab();
     return doc;
   }
 
@@ -58,29 +73,33 @@ export default class CronService {
     return await CrontabModel.create(payload, { returning: true });
   }
 
-  public async update(payload: Crontab): Promise<Crontab> {
+  public async update(payload: Partial<Crontab>): Promise<Crontab> {
     const doc = await this.getDb({ id: payload.id });
     const tab = new Crontab({ ...doc, ...payload });
     tab.saved = false;
     const newDoc = await this.updateDb(tab);
+
     if (doc.isDisabled === 1) {
       return newDoc;
     }
+
     if (this.isNodeCron(doc)) {
       await cronClient.delCron([String(doc.id)]);
     }
-    if (this.isNodeCron(newDoc)) {
+
+    if (this.isNodeCron(newDoc) && !this.isSpecialSchedule(newDoc.schedule)) {
       await cronClient.addCron([
         {
           name: doc.name || '',
           id: String(newDoc.id),
           schedule: newDoc.schedule!,
           command: this.makeCommand(newDoc),
-          extraSchedules: newDoc.extra_schedules || [],
+          extra_schedules: newDoc.extra_schedules || [],
         },
       ]);
     }
-    await this.set_crontab();
+
+    await this.setCrontab();
     return newDoc;
   }
 
@@ -135,7 +154,7 @@ export default class CronService {
   public async remove(ids: number[]) {
     await CrontabModel.destroy({ where: { id: ids } });
     await cronClient.delCron(ids.map(String));
-    await this.set_crontab();
+    await this.setCrontab();
   }
 
   public async pin(ids: number[]) {
@@ -179,8 +198,8 @@ export default class CronService {
       for (const col of viewQuery.filters) {
         const { property, value, operation } = col;
         let q: any = {};
-        let operate2 = null;
-        let operate = null;
+        let operate2: any = null;
+        let operate: any = null;
         switch (operation) {
           case 'Reg':
             operate = Op.like;
@@ -203,9 +222,16 @@ export default class CronService {
           case 'Nin':
             q[Op.and] = [
               {
-                [property]: {
-                  [Op.notIn]: Array.isArray(value) ? value : [value],
-                },
+                [Op.or]: [
+                  {
+                    [property]: {
+                      [Op.notIn]: Array.isArray(value) ? value : [value],
+                    },
+                  },
+                  {
+                    [property]: { [Op.is]: null },
+                  },
+                ],
               },
               property === 'status' && value.includes(2)
                 ? { isDisabled: { [Op.ne]: 1 } }
@@ -320,10 +346,10 @@ export default class CronService {
     log_path,
   }: {
     log_path: string;
-  }): Promise<Crontab | null> {
+  }): Promise<Crontab | undefined> {
     try {
       const result = await CrontabModel.findOne({ where: { log_path } });
-      return result;
+      return result?.get({ plain: true });
     } catch (error) {
       throw error;
     }
@@ -374,7 +400,7 @@ export default class CronService {
     try {
       const result = await CrontabModel.findAll(condition);
       const count = await CrontabModel.count({ where: query });
-      return { data: result, total: count };
+      return { data: result.map((x) => x.get({ plain: true })), total: count };
     } catch (error) {
       throw error;
     }
@@ -424,7 +450,7 @@ export default class CronService {
           name: cron.name,
           command: cron.command,
           schedule: cron.schedule,
-          extraSchedules: cron.extra_schedules,
+          extra_schedules: cron.extra_schedules,
         };
         if (cron.status !== CrontabStatus.queued) {
           resolve(params);
@@ -495,7 +521,7 @@ export default class CronService {
   public async disabled(ids: number[]) {
     await CrontabModel.update({ isDisabled: 1 }, { where: { id: ids } });
     await cronClient.delCron(ids.map(String));
-    await this.set_crontab();
+    await this.setCrontab();
   }
 
   public async enabled(ids: number[]) {
@@ -508,10 +534,10 @@ export default class CronService {
         id: String(doc.id),
         schedule: doc.schedule!,
         command: this.makeCommand(doc),
-        extraSchedules: doc.extra_schedules || [],
+        extra_schedules: doc.extra_schedules || [],
       }));
     await cronClient.addCron(sixCron);
-    await this.set_crontab();
+    await this.setCrontab();
   }
 
   public async log(id: number) {
@@ -579,7 +605,7 @@ export default class CronService {
     return crontab_job_string;
   }
 
-  private async set_crontab(data?: { data: Crontab[]; total: number }) {
+  private async setCrontab(data?: { data: Crontab[]; total: number }) {
     const tabs = data ?? (await this.crontabs());
     var crontab_string = '';
     tabs.data.forEach((tab) => {
@@ -587,7 +613,8 @@ export default class CronService {
       if (
         tab.isDisabled === 1 ||
         _schedule!.length !== 5 ||
-        tab.extra_schedules?.length
+        tab.extra_schedules?.length ||
+        this.isSpecialSchedule(tab.schedule)
       ) {
         crontab_string += '# ';
         crontab_string += tab.schedule;
@@ -608,7 +635,7 @@ export default class CronService {
     await CrontabModel.update({ saved: true }, { where: {} });
   }
 
-  public import_crontab() {
+  public importCrontab() {
     exec('crontab -l', (error, stdout, stderr) => {
       const lines = stdout.split('\n');
       const namePrefix = new Date().getTime();
@@ -644,17 +671,38 @@ export default class CronService {
 
   public async autosave_crontab() {
     const tabs = await this.crontabs();
-    this.set_crontab(tabs);
+    this.setCrontab(tabs);
 
-    const sixCron = tabs.data
-      .filter((x) => this.isNodeCron(x) && x.isDisabled !== 1)
+    const regularCrons = tabs.data
+      .filter(
+        (x) =>
+          this.isNodeCron(x) &&
+          x.isDisabled !== 1 &&
+          !this.isSpecialSchedule(x.schedule),
+      )
       .map((doc) => ({
         name: doc.name || '',
         id: String(doc.id),
         schedule: doc.schedule!,
         command: this.makeCommand(doc),
-        extraSchedules: doc.extra_schedules || [],
+        extra_schedules: doc.extra_schedules || [],
       }));
-    await cronClient.addCron(sixCron);
+    await cronClient.addCron(regularCrons);
+  }
+
+  public async bootTask() {
+    const tabs = await this.crontabs();
+    const bootTasks = tabs.data.filter(
+      (x) => !x.isDisabled && this.isBootSchedule(x.schedule),
+    );
+    if (bootTasks.length > 0) {
+      await CrontabModel.update(
+        { status: CrontabStatus.queued },
+        { where: { id: bootTasks.map((t) => t.id!) } },
+      );
+      for (const task of bootTasks) {
+        await this.runSingle(task.id!);
+      }
+    }
   }
 }

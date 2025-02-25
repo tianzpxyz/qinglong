@@ -474,17 +474,17 @@ handle_task_end() {
   local end_timestamp=$(format_timestamp "$time_format" "$etime")
   local diff_time=$(($end_timestamp - $begin_timestamp))
   local suffix=""
-  [[ "$MANUAL" == "true" ]] && suffix="(手动停止)"
+  [[ "${MANUAL:=}" == "true" ]] && suffix="(手动停止)"
 
   [[ "$diff_time" == 0 ]] && diff_time=1
 
   if [[ $ID ]]; then
-    local error=$(update_cron "\"$ID\"" "1" "" "$log_path" "$begin_timestamp" "$diff_time")
+    local error=$(update_cron "\"$ID\"" "1" "$$" "$log_path" "$begin_timestamp" "$diff_time")
     if [[ $error ]]; then
       error_message=", 任务状态更新失败(${error})"
     fi
   fi
-  echo -e "\n## 执行结束$suffix... $end_time  耗时 $diff_time 秒${error_message}　　　　　"
+  echo -e "\n## 执行结束$suffix... $end_time  耗时 $diff_time 秒${error_message:=}　　　　　"
 }
 
 init_env
