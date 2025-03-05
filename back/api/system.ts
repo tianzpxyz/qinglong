@@ -384,6 +384,7 @@ export default (app: Router) => {
       body: Joi.object({
         retries: Joi.number().optional(),
         twoFactorActivated: Joi.boolean().optional(),
+        password: Joi.string().optional(),
       }),
     }),
     async (req: Request, res: Response, next: NextFunction) => {
@@ -391,6 +392,24 @@ export default (app: Router) => {
         const userService = Container.get(UserService);
         await userService.resetAuthInfo(req.body);
         res.send({ code: 200, message: '更新成功' });
+      } catch (e) {
+        return next(e);
+      }
+    },
+  );
+
+  route.put(
+    '/config/timezone',
+    celebrate({
+      body: Joi.object({
+        timezone: Joi.string().allow('').allow(null),
+      }),
+    }),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const systemService = Container.get(SystemService);
+        const result = await systemService.updateTimezone(req.body);
+        res.send(result);
       } catch (e) {
         return next(e);
       }
