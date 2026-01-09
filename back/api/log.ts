@@ -60,7 +60,7 @@ export default (app: Router) => {
         const logService = Container.get(LogService);
         const finalPath = logService.checkFilePath(
           (req.query.path as string) || '',
-          (req.query.file as string) || '',
+          (req.params.file as string) || '',
         );
         if (!finalPath || blacklist.includes(req.query.path as string)) {
           return res.send({
@@ -92,7 +92,7 @@ export default (app: Router) => {
           path: string;
         };
         const logService = Container.get(LogService);
-        const finalPath = logService.checkFilePath(filename, path);
+        const finalPath = logService.checkFilePath(path, filename);
         if (!finalPath || blacklist.includes(path)) {
           return res.send({
             code: 403,

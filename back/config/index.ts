@@ -2,12 +2,60 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { createRandomString } from './share';
 
+dotenv.config({
+  path: path.join(__dirname, '../../.env'),
+});
+
+interface Config {
+  port: number;
+  grpcPort: number;
+  nodeEnv: string;
+  isDevelopment: boolean;
+  isProduction: boolean;
+  jwt: {
+    secret: string;
+    expiresIn?: string;
+  };
+  cors: {
+    origin: string[];
+    methods: string[];
+  };
+  logs: {
+    level: string;
+  };
+  api: {
+    prefix: string;
+  };
+}
+
+const config: Config = {
+  port: parseInt(process.env.BACK_PORT || '5700', 10),
+  grpcPort: parseInt(process.env.GRPC_PORT || '5500', 10),
+  nodeEnv: process.env.NODE_ENV || 'development',
+  isDevelopment: process.env.NODE_ENV === 'development',
+  isProduction: process.env.NODE_ENV === 'production',
+  logs: {
+    level: process.env.LOG_LEVEL || 'silly',
+  },
+  api: {
+    prefix: '/api',
+  },
+  jwt: {
+    secret: process.env.JWT_SECRET || 'whyour-secret',
+    expiresIn: process.env.JWT_EXPIRES_IN,
+  },
+  cors: {
+    origin: process.env.CORS_ORIGIN
+      ? process.env.CORS_ORIGIN.split(',')
+      : ['*'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  },
+};
+
 process.env.NODE_ENV = process.env.NODE_ENV || 'development';
 
 if (!process.env.QL_DIR) {
-  // 声明QL_DIR环境变量
   let qlHomePath = path.join(__dirname, '../../');
-  // 生产环境
   if (qlHomePath.endsWith('/static/')) {
     qlHomePath = path.join(qlHomePath, '../');
   }
@@ -15,6 +63,19 @@ if (!process.env.QL_DIR) {
 }
 
 const lastVersionFile = `https://qn.whyour.cn/version.yaml`;
+
+// Get and normalize QlBaseUrl
+let baseUrl = process.env.QlBaseUrl || '';
+if (baseUrl) {
+  // Ensure it starts with /
+  if (!baseUrl.startsWith('/')) {
+    baseUrl = `/${baseUrl}`;
+  }
+  // Remove trailing slash for consistency in route definitions
+  if (baseUrl.endsWith('/')) {
+    baseUrl = baseUrl.slice(0, -1);
+  }
+}
 
 const rootPath = process.env.QL_DIR as string;
 const envFound = dotenv.config({ path: path.join(rootPath, '.env') });
@@ -38,6 +99,7 @@ const dbPath = path.join(dataPath, 'db/');
 const uploadPath = path.join(dataPath, 'upload/');
 const sshdPath = path.join(dataPath, 'ssh.d/');
 const systemLogPath = path.join(dataPath, 'syslog/');
+const dependenceCachePath = path.join(dataPath, 'dep_cache/');
 
 const envFile = path.join(preloadPath, 'env.sh');
 const jsEnvFile = path.join(preloadPath, 'env.js');
@@ -65,17 +127,9 @@ if (envFound.error) {
 }
 
 export default {
-  port: parseInt(process.env.BACK_PORT as string, 10),
-  cronPort: parseInt(process.env.CRON_PORT as string, 10),
-  publicPort: parseInt(process.env.PUBLIC_PORT as string, 10),
-  updatePort: parseInt(process.env.UPDATE_PORT as string, 10),
-  secret: process.env.SECRET || createRandomString(16, 32),
-  logs: {
-    level: process.env.LOG_LEVEL || 'silly',
-  },
-  api: {
-    prefix: '/api',
-  },
+  ...config,
+  jwt: config.jwt,
+  baseUrl,
   rootPath,
   tmpPath,
   dataPath,
@@ -118,6 +172,7 @@ export default {
   bakPath,
   apiWhiteList: [
     '/api/user/login',
+    '/api/health',
     '/open/auth/token',
     '/api/user/two-factor/login',
     '/api/system',
@@ -134,4 +189,6 @@ export default {
   sqliteFile,
   sshdPath,
   systemLogPath,
+  dependenceCachePath,
+  maxTokensPerPlatform: 10, // Maximum number of concurrent sessions per platform
 };

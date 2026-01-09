@@ -26,12 +26,13 @@ export default class SshKeyService {
     if (_exist) {
       config = await fs.readFile(this.sshConfigFilePath, { encoding: 'utf-8' });
     } else {
-      await writeFileWithLock(this.sshConfigFilePath, '');
+      await writeFileWithLock(this.sshConfigFilePath, '', { mode: '600' });
     }
     if (!config.includes(this.sshConfigHeader)) {
       await writeFileWithLock(
         this.sshConfigFilePath,
         `${this.sshConfigHeader}\n\n${config}`,
+        { mode: '600' },
       );
     }
   }
@@ -45,7 +46,6 @@ export default class SshKeyService {
         path.join(this.sshPath, alias),
         `${key}${os.EOL}`,
         {
-          encoding: 'utf8',
           mode: '400',
         },
       );
@@ -81,6 +81,10 @@ export default class SshKeyService {
     await writeFileWithLock(
       `${path.join(this.sshPath, `${alias}.config`)}`,
       config,
+      {
+        encoding: 'utf8',
+        mode: '600',
+      },
     );
   }
 
@@ -126,5 +130,33 @@ export default class SshKeyService {
         await this.generateSingleSshConfig(alias, host, proxy);
       }
     }
+  }
+
+  public async addGlobalSSHKey(key: string, alias: string): Promise<void> {
+    await this.generatePrivateKeyFile(`~global_${alias}`, key);
+    // Create a global SSH config entry that matches all hosts
+    // This allows the key to be used for any Git repository
+    await this.generateGlobalSshConfig(`~global_${alias}`);
+  }
+
+  public async removeGlobalSSHKey(alias: string): Promise<void> {
+    await this.removePrivateKeyFile(`~global_${alias}`);
+    await this.removeSshConfig(`~global_${alias}`);
+  }
+
+  private async generateGlobalSshConfig(alias: string) {
+    // Create a config that matches all hosts, making this key globally available
+    const config = `Host *\n    IdentityFile ${path.join(
+      this.sshPath,
+      alias,
+    )}\n    StrictHostKeyChecking no\n`;
+    await writeFileWithLock(
+      `${path.join(this.sshPath, `${alias}.config`)}`,
+      config,
+      {
+        encoding: 'utf8',
+        mode: '600',
+      },
+    );
   }
 }

@@ -1,7 +1,11 @@
-version: 2.18.3
-changeLogLink: https://t.me/jiao_long/427
-publishTime: 2025-03-15 08:00
+version: 2.20.1
+changeLogLink: https://t.me/jiao_long/433
+publishTime: 2025-12-26 22:00
 changeLog: |
-  1. 脚本管理和日志管理支持下载脚本和日志
-  2. 修复 gRPC client 连接超时
-  3. 脚本管理增加强制打开文件
+  1. 修复获取依赖管理列表
+  2. notify.js 修复 TG_PROXY_AUTH 参数拼接
+  3. QLAPI.notify larkSecret 参数
+  4. 修复 cron parser 定时规则校验
+  5. 修复设置 baseUrl 后无法访问
+  6. 修复环境变量排序
+  7. 修复定时任务无法停止

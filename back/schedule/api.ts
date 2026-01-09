@@ -30,7 +30,14 @@ import {
   UpdateCronRequest,
   DeleteCronsRequest,
   CronResponse,
+  GetCronsRequest,
+  CronsResponse,
+  GetCronByIdRequest,
+  EnableCronsRequest,
+  DisableCronsRequest,
+  RunCronsRequest,
 } from '../protos/api';
+import { NotificationInfo } from '../data/notify';
 
 Container.set('logger', LoggerInstance);
 
@@ -39,13 +46,6 @@ export const getEnvs = async (
   callback: sendUnaryData<EnvsResponse>,
 ) => {
   try {
-    if (!call.request.searchValue) {
-      return callback(null, {
-        code: 400,
-        data: [],
-        message: 'searchValue is required',
-      });
-    }
     const envService = Container.get(EnvService);
     const data = await envService.envs(call.request.searchValue);
     callback(null, {
@@ -79,9 +79,17 @@ export const updateEnv = async (
   callback: sendUnaryData<EnvResponse>,
 ) => {
   try {
+    if (!call.request.env?.id) {
+      return callback(null, {
+        code: 400,
+        data: undefined,
+        message: 'id parameter is required',
+      });
+    }
+
     const envService = Container.get(EnvService);
     const data = await envService.update(
-      pick(call.request.env, ['id', 'name', 'value', 'remark']) as EnvItem,
+      pick(call.request.env, ['id', 'name', 'value', 'remarks']) as EnvItem,
     );
     callback(null, { code: 200, data });
   } catch (e: any) {
@@ -94,6 +102,13 @@ export const deleteEnvs = async (
   callback: sendUnaryData<Response>,
 ) => {
   try {
+    if (!call.request.ids || call.request.ids.length === 0) {
+      return callback(null, {
+        code: 400,
+        message: 'ids parameter is required',
+      });
+    }
+
     const envService = Container.get(EnvService);
     await envService.remove(call.request.ids);
     callback(null, { code: 200 });
@@ -107,6 +122,14 @@ export const moveEnv = async (
   callback: sendUnaryData<EnvResponse>,
 ) => {
   try {
+    if (!call.request.id) {
+      return callback(null, {
+        code: 400,
+        data: undefined,
+        message: 'id parameter is required',
+      });
+    }
+
     const envService = Container.get(EnvService);
     const data = await envService.move(call.request.id, {
       fromIndex: call.request.fromIndex,
@@ -123,6 +146,13 @@ export const disableEnvs = async (
   callback: sendUnaryData<Response>,
 ) => {
   try {
+    if (!call.request.ids || call.request.ids.length === 0) {
+      return callback(null, {
+        code: 400,
+        message: 'ids parameter is required',
+      });
+    }
+
     const envService = Container.get(EnvService);
     await envService.disabled(call.request.ids);
     callback(null, { code: 200 });
@@ -136,6 +166,13 @@ export const enableEnvs = async (
   callback: sendUnaryData<Response>,
 ) => {
   try {
+    if (!call.request.ids || call.request.ids.length === 0) {
+      return callback(null, {
+        code: 400,
+        message: 'ids parameter is required',
+      });
+    }
+
     const envService = Container.get(EnvService);
     await envService.enabled(call.request.ids);
     callback(null, { code: 200 });
@@ -149,6 +186,13 @@ export const updateEnvNames = async (
   callback: sendUnaryData<Response>,
 ) => {
   try {
+    if (!call.request.ids || call.request.ids.length === 0) {
+      return callback(null, {
+        code: 400,
+        message: 'ids parameter is required',
+      });
+    }
+
     const envService = Container.get(EnvService);
     await envService.updateNames({
       ids: call.request.ids,
@@ -165,6 +209,14 @@ export const getEnvById = async (
   callback: sendUnaryData<EnvResponse>,
 ) => {
   try {
+    if (!call.request.id) {
+      return callback(null, {
+        code: 400,
+        data: undefined,
+        message: 'id parameter is required',
+      });
+    }
+
     const envService = Container.get(EnvService);
     const data = await envService.getDb({ id: call.request.id });
     callback(null, {
@@ -182,7 +234,11 @@ export const systemNotify = async (
 ) => {
   try {
     const systemService = Container.get(SystemService);
-    const data = await systemService.notify(call.request);
+    const data = await systemService.notify({
+      title: call.request.title,
+      content: call.request.content,
+      notificationInfo: call.request.notificationInfo as unknown as NotificationInfo,
+    });
     callback(null, data);
   } catch (e: any) {
     callback(e);
@@ -268,6 +324,119 @@ export const deleteCrons = async (
   try {
     const cronService = Container.get(CronService);
     await cronService.remove(call.request.ids);
+    callback(null, { code: 200 });
+  } catch (e: any) {
+    callback(e);
+  }
+};
+
+export const getCrons = async (
+  call: ServerUnaryCall<GetCronsRequest, CronsResponse>,
+  callback: sendUnaryData<CronsResponse>,
+) => {
+  try {
+    const cronService = Container.get(CronService);
+    const result = await cronService.crontabs({
+      searchValue: call.request.searchValue || '',
+      page: '0',
+      size: '0',
+      sorter: '',
+      filters: '',
+      queryString: '',
+    });
+    const data = result.data.map((x) => normalizeCronData(x as CronItem));
+    callback(null, {
+      code: 200,
+      data: data.filter((x): x is CronItem => x !== undefined),
+    });
+  } catch (e: any) {
+    callback(null, {
+      code: 500,
+      data: [],
+      message: e.message,
+    });
+  }
+};
+
+export const getCronById = async (
+  call: ServerUnaryCall<GetCronByIdRequest, CronResponse>,
+  callback: sendUnaryData<CronResponse>,
+) => {
+  try {
+    if (!call.request.id) {
+      return callback(null, {
+        code: 400,
+        data: undefined,
+        message: 'id parameter is required',
+      });
+    }
+
+    const cronService = Container.get(CronService);
+    const data = (await cronService.getDb({ id: call.request.id })) as CronItem;
+    callback(null, { code: 200, data: normalizeCronData(data) });
+  } catch (e: any) {
+    callback(null, {
+      code: 404,
+      data: undefined,
+      message: e.message,
+    });
+  }
+};
+
+export const enableCrons = async (
+  call: ServerUnaryCall<EnableCronsRequest, Response>,
+  callback: sendUnaryData<Response>,
+) => {
+  try {
+    if (!call.request.ids || call.request.ids.length === 0) {
+      return callback(null, {
+        code: 400,
+        message: 'ids parameter is required',
+      });
+    }
+
+    const cronService = Container.get(CronService);
+    await cronService.enabled(call.request.ids);
+    callback(null, { code: 200 });
+  } catch (e: any) {
+    callback(e);
+  }
+};
+
+export const disableCrons = async (
+  call: ServerUnaryCall<DisableCronsRequest, Response>,
+  callback: sendUnaryData<Response>,
+) => {
+  try {
+    if (!call.request.ids || call.request.ids.length === 0) {
+      return callback(null, {
+        code: 400,
+        message: 'ids parameter is required',
+      });
+    }
+
+    const cronService = Container.get(CronService);
+    await cronService.disabled(call.request.ids);
+    callback(null, { code: 200 });
+  } catch (e: any) {
+    callback(e);
+  }
+};
+
+export const runCrons = async (
+  call: ServerUnaryCall<RunCronsRequest, Response>,
+  callback: sendUnaryData<Response>,
+) => {
+  try {
+    if (!call.request.ids || call.request.ids.length === 0) {
+      return callback(null, {
+        code: 400,
+        message: 'ids parameter is required',
+      });
+    }
+
+    const cronService = Container.get(CronService);
+    await cronService.run(call.request.ids);
     callback(null, { code: 200 });
   } catch (e: any) {
     callback(e);

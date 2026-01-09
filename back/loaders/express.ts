@@ -7,36 +7,36 @@ import { UnauthorizedError, expressjwt } from 'express-jwt';
 import { getPlatform, getToken } from '../config/util';
 import rewrite from 'express-urlrewrite';
 import { errors } from 'celebrate';
-import { createProxyMiddleware } from 'http-proxy-middleware';
 import { serveEnv } from '../config/serverEnv';
-import Logger from './logger';
 import { IKeyvStore, shareStore } from '../shared/store';
+import { isValidToken } from '../shared/auth';
+import path from 'path';
 
 export default ({ app }: { app: Application }) => {
   app.set('trust proxy', 'loopback');
   app.use(cors());
+  
+  // Rewrite URLs to strip baseUrl prefix if configured
+  // This allows the rest of the app to work without baseUrl awareness
+  if (config.baseUrl) {
+    app.use(rewrite(`${config.baseUrl}/*`, '/$1'));
+  }
+  
   app.get(`${config.api.prefix}/env.js`, serveEnv);
   app.use(`${config.api.prefix}/static`, express.static(config.uploadPath));
-
-  app.use(
-    '/api/public',
-    createProxyMiddleware({
-      target: `http://0.0.0.0:${config.publicPort}/api`,
-      changeOrigin: true,
-      pathRewrite: { '/api/public': '' },
-      logger: Logger,
-    }),
-  );
 
   app.use(bodyParser.json({ limit: '50mb' }));
   app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
 
+  const frontendPath = path.join(config.rootPath, 'static/dist');
+  app.use(express.static(frontendPath));
+
   app.use(
     expressjwt({
-      secret: config.secret,
+      secret: config.jwt.secret,
       algorithms: ['HS384'],
     }).unless({
-      path: [...config.apiWhiteList, /^\/open\//],
+      path: [...config.apiWhiteList, /^\/(?!api\/).*/],
     }),
   );
 
@@ -50,7 +50,11 @@ export default ({ app }: { app: Application }) => {
     return next();
   });
 
-  app.use(async (req, res, next) => {
+  app.use(async (req: Request, res, next) => {
+    if (!['/open/', '/api/'].some((x) => req.path.startsWith(x))) {
+      return next();
+    }
+
     const headerToken = getToken(req);
     if (req.path.startsWith('/open/')) {
       const apps = await shareStore.getApps();
@@ -81,11 +85,8 @@ export default ({ app }: { app: Application }) => {
     }
 
     const authInfo = await shareStore.getAuthInfo();
-    if (authInfo && headerToken) {
-      const { token = '', tokens = {} } = authInfo;
-      if (headerToken === token || tokens[req.platform] === headerToken) {
-        return next();
-      }
+    if (isValidToken(authInfo, headerToken, req.platform)) {
+      return next();
     }
 
     const errorCode = headerToken ? 'invalid_token' : 'credentials_required';
@@ -122,10 +123,15 @@ export default ({ app }: { app: Application }) => {
   app.use(rewrite('/open/*', '/api/$1'));
   app.use(config.api.prefix, routes());
 
-  app.use((req, res, next) => {
-    const err: any = new Error('Not Found');
-    err['status'] = 404;
-    next(err);
+  app.get('*', (_, res, next) => {
+    const indexPath = path.join(frontendPath, 'index.html');
+    res.sendFile(indexPath, (err) => {
+      if (err) {
+        const err: any = new Error('Not Found');
+        err['status'] = 404;
+        next(err);
+      }
+    });
   });
 
   app.use(errors());

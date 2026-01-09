@@ -49,6 +49,7 @@ const Setting = () => {
     reloadTheme,
     systemInfo,
   } = useOutletContext<SharedContext>();
+  console.log('user',user)
   const columns = [
     {
       title: intl.get('名称'),
@@ -363,11 +364,9 @@ const Setting = () => {
           ]}
         />
       </div>
-      <AppModal
-        visible={isModalVisible}
-        handleCancel={handleCancel}
-        app={editedApp}
-      />
+      {isModalVisible && (
+        <AppModal handleCancel={handleCancel} app={editedApp} />
+      )}
     </PageContainer>
   );
 };

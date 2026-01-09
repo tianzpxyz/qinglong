@@ -1,6 +1,6 @@
 import { Service, Inject } from 'typedi';
 import winston from 'winston';
-import { createRandomString, getNetIp } from '../config/util';
+import { createRandomString } from '../config/util';
 import config from '../config';
 import jwt from 'jsonwebtoken';
 import { authenticator } from '@otplib/preset-default';
@@ -11,6 +11,7 @@ import {
   SystemModelInfo,
   LoginStatus,
   AuthInfo,
+  TokenInfo,
 } from '../data/system';
 import { NotificationInfo } from '../data/notify';
 import NotificationService from './notify';
@@ -21,6 +22,8 @@ import dayjs from 'dayjs';
 import IP2Region from 'ip2region';
 import requestIp from 'request-ip';
 import uniq from 'lodash/uniq';
+import pickBy from 'lodash/pickBy';
+import isNil from 'lodash/isNil';
 import { shareStore } from '../shared/store';
 
 @Service()
@@ -93,18 +96,29 @@ export default class UserService {
     }
     if (username === cUsername && password === cPassword) {
       const data = createRandomString(50, 100);
-      const expiration = twoFactorActivated ? 60 : 20;
-      let token = jwt.sign({ data }, config.secret as any, {
-        expiresIn: 60 * 60 * 24 * expiration,
+      const expiration = twoFactorActivated ? '60d' : '20d';
+      let token = jwt.sign({ data }, config.jwt.secret, {
+        expiresIn: config.jwt.expiresIn || expiration,
         algorithm: 'HS384',
       });
 
+      const tokenInfo: TokenInfo = {
+        value: token,
+        timestamp,
+        ip,
+        address,
+        platform: req.platform,
+      };
+
+      const updatedTokens = this.addTokenToList(
+        tokens,
+        req.platform,
+        tokenInfo,
+      );
+
       await this.updateAuthInfo(content, {
         token,
-        tokens: {
-          ...tokens,
-          [req.platform]: token,
-        },
+        tokens: updatedTokens,
         lastlogon: timestamp,
         retries: 0,
         lastip: ip,
@@ -131,7 +145,14 @@ export default class UserService {
       this.getLoginLog();
       return {
         code: 200,
-        data: { token, lastip, lastaddr, lastlogon, retries, platform },
+        data: {
+          token,
+          lastip,
+          lastaddr,
+          lastlogon,
+          retries,
+          platform,
+        },
       };
     } else {
       await this.updateAuthInfo(content, {
@@ -171,11 +192,37 @@ export default class UserService {
     }
   }
 
-  public async logout(platform: string): Promise<any> {
+  public async logout(platform: string, tokenValue: string): Promise<any> {
+    if (!platform || !tokenValue) {
+      this.logger.warn('Invalid logout parameters - empty platform or token');
+      return;
+    }
+
     const authInfo = await this.getAuthInfo();
+
+    // Verify the token exists before attempting to remove it
+    const tokenExists = this.findTokenInList(
+      authInfo.tokens,
+      platform,
+      tokenValue,
+    );
+    if (!tokenExists && authInfo.token !== tokenValue) {
+      // Token not found, but don't throw error - user may have already logged out
+      this.logger.info(
+        `Logout attempted for non-existent token on platform: ${platform}`,
+      );
+      return;
+    }
+
+    const updatedTokens = this.removeTokenFromList(
+      authInfo.tokens,
+      platform,
+      tokenValue,
+    );
+
     await this.updateAuthInfo(authInfo, {
-      token: '',
-      tokens: { ...authInfo.tokens, [platform]: '' },
+      token: authInfo.token === tokenValue ? '' : authInfo.token,
+      tokens: updatedTokens,
     });
   }
 
@@ -264,7 +311,16 @@ export default class UserService {
     if (isValid) {
       return this.login({ username, password }, req, false);
     } else {
-      const { ip, address } = await getNetIp(req);
+      const ip = requestIp.getClientIp(req) || '';
+      const query = new IP2Region();
+      const ipAddress = query.search(ip);
+      let address = '';
+      if (ipAddress) {
+        const { country, province, city, isp } = ipAddress;
+        address = uniq([country, province, city, isp])
+          .filter(Boolean)
+          .join(' ');
+      }
       await this.updateAuthInfo(authInfo, {
         lastip: ip,
         lastaddr: address,
@@ -346,13 +402,113 @@ export default class UserService {
     }
   }
 
+  private normalizeTokens(
+    tokens: Record<string, string | TokenInfo[]>,
+  ): Record<string, TokenInfo[]> {
+    const normalized: Record<string, TokenInfo[]> = {};
+
+    for (const [platform, value] of Object.entries(tokens)) {
+      if (typeof value === 'string') {
+        // Legacy format: convert string token to TokenInfo array
+        if (value) {
+          normalized[platform] = [
+            {
+              value,
+              timestamp: Date.now(),
+              ip: '',
+              address: '',
+              platform,
+            },
+          ];
+        } else {
+          normalized[platform] = [];
+        }
+      } else {
+        // Already in new format
+        normalized[platform] = value || [];
+      }
+    }
+
+    return normalized;
+  }
+
+  private addTokenToList(
+    tokens: Record<string, string | TokenInfo[]>,
+    platform: string,
+    tokenInfo: TokenInfo,
+    maxTokensPerPlatform: number = config.maxTokensPerPlatform,
+  ): Record<string, TokenInfo[]> {
+    // Validate maxTokensPerPlatform parameter
+    if (!Number.isInteger(maxTokensPerPlatform) || maxTokensPerPlatform < 1) {
+      this.logger.warn(
+        `Invalid maxTokensPerPlatform value: ${maxTokensPerPlatform}, using default`,
+      );
+      maxTokensPerPlatform = config.maxTokensPerPlatform;
+    }
+
+    const normalized = this.normalizeTokens(tokens);
+
+    if (!normalized[platform]) {
+      normalized[platform] = [];
+    }
+
+    // Add new token
+    normalized[platform].unshift(tokenInfo);
+
+    // Limit the number of active tokens per platform
+    if (normalized[platform].length > maxTokensPerPlatform) {
+      normalized[platform] = normalized[platform].slice(
+        0,
+        maxTokensPerPlatform,
+      );
+    }
+
+    return normalized;
+  }
+
+  private removeTokenFromList(
+    tokens: Record<string, string | TokenInfo[]>,
+    platform: string,
+    tokenValue: string,
+  ): Record<string, TokenInfo[]> {
+    const normalized = this.normalizeTokens(tokens);
+
+    if (normalized[platform]) {
+      normalized[platform] = normalized[platform].filter(
+        (t) => t.value !== tokenValue,
+      );
+    }
+
+    return normalized;
+  }
+
+  private findTokenInList(
+    tokens: Record<string, string | TokenInfo[]>,
+    platform: string,
+    tokenValue: string,
+  ): TokenInfo | undefined {
+    const normalized = this.normalizeTokens(tokens);
+
+    if (normalized[platform]) {
+      return normalized[platform].find((t) => t.value === tokenValue);
+    }
+
+    return undefined;
+  }
+
   public async resetAuthInfo(info: Partial<AuthInfo>) {
-    const { retries, twoFactorActivated, password } = info;
+    const { retries, twoFactorActivated, password, username } = info;
     const authInfo = await this.getAuthInfo();
-    await this.updateAuthInfo(authInfo, {
-      retries,
-      twoFactorActivated,
-      password,
-    });
+    const payload = pickBy(
+      {
+        retries,
+        twoFactorActivated,
+        password,
+        username,
+      },
+      (x) => !isNil(x),
+    );
+
+    await this.updateAuthInfo(authInfo, payload);
   }
 }
